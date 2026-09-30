@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f3ec">
+    <title>Code / Quote</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="topbar">
+        <a class="wordmark" href="/" aria-label="Code Quote home">C<span>/</span>Q</a>
+        <p class="topbar-note">A little perspective for your next commit.</p>
+        <span class="status"><span class="status-dot"></span> DAILY BUILD</span>
+      </header>
+
+      <section class="quote-stage" aria-labelledby="quote-label">
+        <div class="eyebrow" id="quote-label"><span>01</span> RANDOM THOUGHT</div>
+        <div class="quote-mark" aria-hidden="true">“</div>
+        <blockquote>{{ quote.text }}</blockquote>
+        <div class="quote-attribution">
+          <span class="attribution-rule"></span>
+          <cite>{{ quote.author }}</cite>
+        </div>
+        <form action="/" method="get">
+          <button class="next-button" type="submit">
+            <span>Another thought</span>
+            <span class="button-arrow" aria-hidden="true">↗</span>
+          </button>
+        </form>
+      </section>
+
+      <footer class="footer">
+        <span>BUILT FOR THE LOVE OF THE CRAFT</span>
+        <span class="footer-mark">&lt;/&gt;</span>
+        <span>REFRESH FOR A NEW QUOTE</span>
+      </footer>
+    </main>
+  </body>
+</html>
