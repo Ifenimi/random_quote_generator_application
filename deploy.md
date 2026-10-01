@@ -1,143 +1,223 @@
-# Deploy to EC2
+# Deploy to Amazon EC2
 
-This guide deploys the Flask quote generator to an Ubuntu EC2 instance at
-`16.170.220.9`, serves it through Nginx, and enables HTTPS for
-`devopsghost.name.ng`.
+This guide deploys the Flask quote generator to the following server and domain:
 
-## 1. Configure AWS and DNS
+- **Server IP:** `16.170.220.9`
+- **Domain:** `devopsghost.name.ng`
+- **Application port:** `8000` internally, proxied through Nginx
 
-1. Launch an Ubuntu Server EC2 instance and use its key pair for SSH access.
-   The commands below assume the default Ubuntu user, `ubuntu`.
-2. In the instance's security group, allow inbound SSH (TCP 22) from your IP
-   address, and HTTP (TCP 80) and HTTPS (TCP 443) from the internet.
-3. At your DNS provider, create an **A** record for `devopsghost.name.ng` that
-   points to `16.170.220.9`. Use an Elastic IP for the instance if its address
-   must remain stable when stopped and started.
-4. Wait until the domain resolves to the instance before requesting a TLS
-   certificate. Check with `nslookup devopsghost.name.ng` from your computer.
+The commands below assume an Ubuntu EC2 instance and a local clone of this repository.
 
-## 2. Install server packages
+## 1. Configure AWS networking
 
-Connect to the instance from PowerShell, replacing the key path as needed:
+In the EC2 security group attached to `16.170.220.9`, allow inbound traffic for:
 
-```powershell
-ssh -i "$HOME\Downloads\your-key.pem" ubuntu@16.170.220.9
+- SSH, TCP `22`, from your own IP address
+- HTTP, TCP `80`, from `0.0.0.0/0`
+- HTTPS, TCP `443`, from `0.0.0.0/0`
+
+Do not expose port `8000` publicly. Gunicorn will listen only on the server itself.
+
+## 2. Point the domain to EC2
+
+At the DNS provider for `name.ng`, create or update this record:
+
+| Type | Name          | Value          | TTL   |
+| ---- | ------------- | -------------- | ----- |
+| A    | `devopsghost` | `16.170.220.9` | `300` |
+
+Wait until the record resolves before requesting the SSL certificate. You can check it with:
+
+```bash
+nslookup devopsghost.name.ng
 ```
 
-On the EC2 instance, install Python, Nginx, and Certbot, then prepare the
-application directory:
+## 3. Connect to the server
+
+Replace `<KEY_PATH>` with the path to your private key and `<EC2_USER>` with the AMI username, commonly `ubuntu` for Ubuntu Linux.
+
+```bash
+ssh -i <KEY_PATH> <EC2_USER>@16.170.220.9
+```
+
+Update the operating system and install the runtime packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx
-sudo mkdir -p /opt/random-quote-generator
-sudo chown ubuntu:ubuntu /opt/random-quote-generator
+sudo apt upgrade -y
+sudo apt install -y python3 python3-venv python3-pip nginx
 ```
 
-## 3. Copy the application
+## 4. Copy and prepare the application
 
-Open a second PowerShell window on your computer, change to the project
-directory, and copy the application files. Update the key path if necessary.
+From PowerShell on your local machine, run these commands from the repository directory. Set the key path and EC2 username as above. These commands copy only application files, not the local Windows `.venv`.
 
 ```powershell
-$Key = "$HOME\Downloads\your-key.pem"
-scp -i $Key .\app.py .\requirements.txt ubuntu@16.170.220.9:/opt/random-quote-generator/
-scp -i $Key -r .\templates .\static ubuntu@16.170.220.9:/opt/random-quote-generator/
+$KeyPath = "$HOME\Downloads\your-key.pem"
+scp -i $KeyPath .\app.py .\requirements.txt .\test_app.py <EC2_USER>@16.170.220.9:/home/<EC2_USER>/
+scp -i $KeyPath -r .\templates .\static <EC2_USER>@16.170.220.9:/home/<EC2_USER>/
 ```
 
-Back in the EC2 SSH session, create a virtual environment and install the app
-and its production server:
+Back on the EC2 server, install the application under `/var/www`:
 
 ```bash
-cd /opt/random-quote-generator
-python3 -m venv venv
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements.txt gunicorn
+sudo mkdir -p /var/www/random-quote-generator-python-app
+sudo cp /home/$USER/app.py /home/$USER/requirements.txt /home/$USER/test_app.py /var/www/random-quote-generator-python-app/
+sudo cp -r /home/$USER/templates /home/$USER/static /var/www/random-quote-generator-python-app/
+sudo chown -R $USER:www-data /var/www/random-quote-generator-python-app
+cd /var/www/random-quote-generator-python-app
 ```
 
-## 4. Run Flask with systemd and Gunicorn
-
-Create the service definition:
+Create the virtual environment and install the production dependencies:
 
 ```bash
-sudo tee /etc/systemd/system/random-quote-generator.service >/dev/null <<'EOF'
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+```
+
+Run the tests before starting the service:
+
+```bash
+.venv/bin/python -m unittest discover -v
+```
+
+To check the app locally on the EC2 instance, run the development server bound to localhost:
+
+```bash
+.venv/bin/flask --app app run --host=127.0.0.1 --port=5000
+```
+
+In another SSH session, check `curl http://127.0.0.1:5000`, then stop the development server with `Ctrl+C` before continuing.
+
+## 5. Create the systemd service
+
+Create the service file:
+
+```bash
+sudo vim /etc/systemd/system/random-quote-generator.service
+```
+
+Paste this configuration:
+
+```ini
 [Unit]
-Description=Random Quote Generator Flask App
+Description=Random Quote Generator Flask application
 After=network.target
 
 [Service]
 User=ubuntu
-Group=ubuntu
-WorkingDirectory=/opt/random-quote-generator
-ExecStart=/opt/random-quote-generator/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 app:app
+Group=www-data
+WorkingDirectory=/var/www/random_quote_generator_application
+Environment="PATH=/var/www/random_quote_generator_application/.venv/bin"
+ExecStart=/var/www/random_quote_generator_application/.venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8000 app:app
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now random-quote-generator
-sudo systemctl status random-quote-generator --no-pager
 ```
 
-Gunicorn listens only on localhost; Nginx will accept public web traffic and
-forward it to the app. Do not expose port 8000 in the EC2 security group.
+If the EC2 login user is not `ubuntu`, change `User=ubuntu` and use that user in the ownership command above. Keep `Group=www-data` so the service runs with the Nginx group.
 
-## 5. Configure Nginx
-
-Create an Nginx site that proxies requests to Gunicorn:
+Enable and start the service:
 
 ```bash
-sudo tee /etc/nginx/sites-available/random-quote-generator >/dev/null <<'EOF'
+sudo systemctl daemon-reload
+sudo systemctl enable --now random-quote-generator
+sudo systemctl status random-quote-generator
+```
+
+The service should show `active (running)`. If it does not, inspect the logs:
+
+```bash
+sudo journalctl -u random-quote-generator -n 50 --no-pager
+```
+
+## 6. Configure Nginx
+
+Create an Nginx site configuration:
+
+```bash
+sudo vim /etc/nginx/sites-available/random-quote-generator
+```
+
+Paste:
+
+```nginx
 server {
-    listen 80;
-    server_name devopsghost.name.ng;
+   listen 80;
+   listen [::]:80;
 
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
+   server_name 16.170.220.9 devopsghost.name.ng;
+
+   location / {
+      proxy_pass http://127.0.0.1:8000;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+   }
 }
-EOF
+```
 
+Enable the site and verify the configuration:
+
+```bash
 sudo ln -s /etc/nginx/sites-available/random-quote-generator /etc/nginx/sites-enabled/random-quote-generator
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Before enabling HTTPS, confirm `http://devopsghost.name.ng` loads the app.
+Visit `http://devopsghost.name.ng` to confirm that the application loads.
 
-## 6. Enable HTTPS
+## 7. Enable HTTPS with Let's Encrypt
 
-After DNS points to the instance and HTTP is reachable, request and install a
-Let's Encrypt certificate:
+Install Certbot and its Nginx plugin:
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+```
+
+Request and install the certificate:
 
 ```bash
 sudo certbot --nginx -d devopsghost.name.ng
 ```
 
-Follow the prompts to provide an email address and enable HTTP-to-HTTPS
-redirect. Certbot configures renewal automatically. Verify renewal with:
+Choose the option to redirect HTTP traffic to HTTPS when prompted. Confirm automatic renewal with:
 
 ```bash
 sudo certbot renew --dry-run
 ```
 
-The site should now be available at <https://devopsghost.name.ng>.
+The application should now be available at:
 
-## Operations
-
-```bash
-sudo systemctl status random-quote-generator
-sudo journalctl -u random-quote-generator -n 100 --no-pager
-sudo systemctl restart random-quote-generator
+```text
+https://devopsghost.name.ng
 ```
 
-When deploying an update, copy the changed files to `/opt/random-quote-generator`
-and restart the service. Keep the EC2 SSH key private, restrict SSH access to
-trusted IPs, and do not run Flask's development server in production.
+## Updating the application
+
+From PowerShell in the local repository, copy the changed files to the EC2 instance. Include `templates` or `static` if either directory changed:
+
+```powershell
+scp -i $KeyPath .\app.py .\requirements.txt .\test_app.py <EC2_USER>@16.170.220.9:/var/www/random-quote-generator-python-app/
+scp -i $KeyPath -r .\templates .\static <EC2_USER>@16.170.220.9:/var/www/random-quote-generator-python-app/
+```
+
+Then run on EC2:
+
+```bash
+cd /var/www/random-quote-generator-python-app
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -v
+sudo systemctl restart random-quote-generator
+sudo systemctl status random-quote-generator
+```
+
+To watch application logs while troubleshooting:
+
+```bash
+sudo journalctl -u random-quote-generator -f
+```
